@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
-from datetime import datetime
+from datetime import datetime, timedelta
+import calendar
 
 import customtkinter as ctk
 import psycopg2
@@ -15,6 +16,43 @@ ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
 
+def sumar_meses(fecha, cantidad):
+    mes_total = fecha.month - 1 + cantidad
+    anio = fecha.year + mes_total // 12
+    mes = mes_total % 12 + 1
+    dia = min(fecha.day, calendar.monthrange(anio, mes)[1])
+    return fecha.replace(year=anio, month=mes, day=dia)
+
+
+def sumar_anios(fecha, cantidad):
+    anio = fecha.year + cantidad
+    dia = min(fecha.day, calendar.monthrange(anio, fecha.month)[1])
+    return fecha.replace(year=anio, day=dia)
+
+
+def sumar_periodo(fecha, tipo_periodo, cantidad):
+    if tipo_periodo == "Dias":
+        return fecha + timedelta(days=cantidad)
+    if tipo_periodo == "Semanas":
+        return fecha + timedelta(weeks=cantidad)
+    if tipo_periodo == "Meses":
+        return sumar_meses(fecha, cantidad)
+    if tipo_periodo == "A\u00f1os":
+        return sumar_anios(fecha, cantidad)
+    raise ValueError(f"tipo_periodo desconocido: {tipo_periodo}")
+
+
+def generar_fechas_serie(fecha_inicio, tipo_periodo, cantidad, fecha_fin):
+    if fecha_fin is None:
+        fecha_fin = sumar_periodo(fecha_inicio, "Meses", 6)  # horizonte para series indefinidas
+    fechas = []
+    actual = fecha_inicio
+    while actual <= fecha_fin:
+        fechas.append(actual)
+        actual = sumar_periodo(actual, tipo_periodo, cantidad)
+    return fechas
+
+
 class AppAgenda(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -25,9 +63,9 @@ class AppAgenda(ctk.CTk):
         self.conn_params = {
             "dbname": "agenda",
             "user": "postgres",
-            "password": "postgres",
+            "password": "andresbbello2006",
             "host": "localhost",
-            "port": "5432",
+            "port": "5432", 
         }
 
         self.usuarios_combo = {}
@@ -54,6 +92,7 @@ class AppAgenda(ctk.CTk):
 
     def obtener_conexion(self):
         conn = psycopg2.connect(**self.conn_params)
+        conn.set_client_encoding("UTF8")
         with conn.cursor() as cur:
             cur.execute("SET search_path TO prototipo, public;")
         return conn
@@ -132,6 +171,7 @@ class AppAgenda(ctk.CTk):
             ("Categorías", "📁"),
             ("Eventos", "🗓️"),
             ("Disponibilidad", "🕓"),
+            ("Eventos Recurrentes", "🔁"),
         ], start=2):
             btn = ctk.CTkButton(
                 self.sidebar_frame, text=f"{icono}  {nombre}",
@@ -145,7 +185,7 @@ class AppAgenda(ctk.CTk):
             self.sidebar_frame,
             text="🔄  Recargar datos",
             command=self.actualizar_todas_las_tablas
-        ).grid(row=6, column=0, padx=15, pady=(20, 5), sticky="ew")
+        ).grid(row=7, column=0, padx=15, pady=(20, 5), sticky="ew")
 
         ctk.CTkLabel(self.sidebar_frame, text="APARIENCIA", font=ctk.CTkFont(size=11, weight="bold")).grid(
             row=11, column=0, padx=20, pady=(10, 5), sticky="w"
@@ -171,11 +211,13 @@ class AppAgenda(ctk.CTk):
         self.tab_categorias = self.tabview.add("Categorías")
         self.tab_eventos = self.tabview.add("Eventos")
         self.tab_disponibilidades = self.tabview.add("Disponibilidad")
+        self.tab_series = self.tabview.add("Eventos Recurrentes")
 
         self.configurar_pestana_usuarios()
         self.configurar_pestana_categorias()
         self.configurar_pestana_eventos()
         self.configurar_pestana_disponibilidades()
+        self.configurar_pestana_series()
         self.seleccionar_modulo("Usuarios")
 
     def al_cambiar_pestana(self):
@@ -871,6 +913,250 @@ class AppAgenda(ctk.CTk):
         except Exception as e:
             messagebox.showerror("No se pudo buscar", str(e))
 
+    # -------------------- EVENTOS RECURRENTES --------------------
+
+    def configurar_pestana_series(self):
+        self.crear_encabezado(self.tab_series, "Eventos Recurrentes",
+                               "Define series periódicas y genera automáticamente sus ocurrencias.")
+
+        cuerpo = ctk.CTkFrame(self.tab_series, fg_color="transparent")
+        cuerpo.pack(fill="both", expand=True, padx=10, pady=5)
+        cuerpo.grid_columnconfigure(0, weight=3)
+        cuerpo.grid_columnconfigure(1, weight=1)
+        cuerpo.grid_rowconfigure(0, weight=1)
+
+        izquierda = ctk.CTkFrame(cuerpo, fg_color="transparent")
+        izquierda.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        izquierda.grid_rowconfigure(0, weight=1)
+        izquierda.grid_rowconfigure(1, weight=1)
+        izquierda.grid_columnconfigure(0, weight=1)
+
+        panel_series = ctk.CTkFrame(izquierda)
+        panel_series.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
+        ctk.CTkLabel(panel_series, text="Series definidas",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=8, pady=(6, 2))
+        self.tree_series = self.crear_treeview(
+            panel_series,
+            ("ID", "Tipo", "Cada", "Inicio", "Fin", "Ocurrencias"),
+            (40, 80, 50, 90, 90, 90)
+        )
+        self.tree_series.bind("<<TreeviewSelect>>", self.cargar_ocurrencias_serie)
+
+        panel_ocurrencias = ctk.CTkFrame(izquierda)
+        panel_ocurrencias.grid(row=1, column=0, sticky="nsew")
+        ctk.CTkLabel(panel_ocurrencias, text="Ocurrencias de la serie seleccionada",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=8, pady=(6, 2))
+        self.tree_ocurrencias = self.crear_treeview(
+            panel_ocurrencias,
+            ("ID Evento", "Título", "Inicio", "Fin"),
+            (70, 160, 130, 130)
+        )
+
+        ctk.CTkButton(izquierda, text="🗑 Eliminar serie seleccionada (y sus ocurrencias)",
+                      command=self.eliminar_serie, fg_color="#b33939",
+                      hover_color="#8f2d2d").grid(row=2, column=0, sticky="ew", pady=(8, 0))
+
+        form = ctk.CTkScrollableFrame(cuerpo, width=300)
+        form.grid(row=0, column=1, sticky="nsew")
+
+        ctk.CTkLabel(form, text="Nueva serie de eventos",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(10, 15))
+
+        ctk.CTkLabel(form, text="Usuario").pack(anchor="w", padx=10, pady=(6, 2))
+        self.combo_serie_usuario = ctk.CTkComboBox(form, values=["Seleccione un usuario"], state="readonly")
+        self.combo_serie_usuario.set("Seleccione un usuario")
+        self.combo_serie_usuario.pack(fill="x", padx=10, pady=4)
+
+        ctk.CTkLabel(form, text="Categoría").pack(anchor="w", padx=10, pady=(6, 2))
+        self.combo_serie_categoria = ctk.CTkComboBox(form, values=["Seleccione una categoría"], state="readonly")
+        self.combo_serie_categoria.set("Seleccione una categoría")
+        self.combo_serie_categoria.pack(fill="x", padx=10, pady=4)
+
+        ctk.CTkLabel(form, text="Título").pack(anchor="w", padx=10, pady=(6, 2))
+        self.titulo_serie = ctk.CTkEntry(form, placeholder_text="Ej: Reunión semanal de equipo")
+        self.titulo_serie.pack(fill="x", padx=10, pady=4)
+
+        ctk.CTkLabel(form, text="Hora inicio (HH:MM)").pack(anchor="w", padx=10, pady=(6, 2))
+        self.hora_inicio_serie = ctk.CTkEntry(form, placeholder_text="HH:MM")
+        self.hora_inicio_serie.pack(fill="x", padx=10, pady=4)
+
+        ctk.CTkLabel(form, text="Hora fin (HH:MM)").pack(anchor="w", padx=10, pady=(6, 2))
+        self.hora_fin_serie = ctk.CTkEntry(form, placeholder_text="HH:MM")
+        self.hora_fin_serie.pack(fill="x", padx=10, pady=4)
+
+        ctk.CTkLabel(form, text="Tipo de periodo").pack(anchor="w", padx=10, pady=(10, 2))
+        self.combo_tipo_periodo = ctk.CTkComboBox(form, values=["Dias", "Semanas", "Meses", "Años"], state="readonly")
+        self.combo_tipo_periodo.set("Semanas")
+        self.combo_tipo_periodo.pack(fill="x", padx=10, pady=4)
+
+        ctk.CTkLabel(form, text="Cada cuántas unidades").pack(anchor="w", padx=10, pady=(6, 2))
+        self.cantidad_periodo = ctk.CTkEntry(form, placeholder_text="Ej: 1")
+        self.cantidad_periodo.pack(fill="x", padx=10, pady=4)
+
+        ctk.CTkLabel(form, text="Fecha inicio de la serie").pack(anchor="w", padx=10, pady=(10, 2))
+        self.fecha_inicio_serie_widget = self.crear_selector_fecha(form)
+        self.fecha_inicio_serie_widget.pack(fill="x", padx=10)
+
+        self.serie_indefinida = ctk.CTkCheckBox(form, text="Serie indefinida (sin fecha de fin)",
+                                                 command=self.alternar_fecha_fin_serie)
+        self.serie_indefinida.pack(anchor="w", padx=10, pady=(10, 4))
+
+        ctk.CTkLabel(form, text="Fecha final de la serie").pack(anchor="w", padx=10, pady=(6, 2))
+        self.fecha_fin_serie_widget = self.crear_selector_fecha(form)
+        self.fecha_fin_serie_widget.pack(fill="x", padx=10)
+
+        ctk.CTkButton(form, text="⚙️ Generar serie",
+                      command=self.generar_serie_eventos).pack(fill="x", padx=10, pady=(18, 5))
+
+        self.limpiar_form_serie()
+
+    def alternar_fecha_fin_serie(self):
+        if self.serie_indefinida.get():
+            self.fecha_fin_serie_widget.configure(state="disabled")
+        else:
+            self.fecha_fin_serie_widget.configure(state="normal")
+
+    def limpiar_form_serie(self):
+        self.combo_serie_usuario.set("Seleccione un usuario")
+        self.combo_serie_categoria.set("Seleccione una categoría")
+        self.titulo_serie.delete(0, tk.END)
+        self.hora_inicio_serie.delete(0, tk.END); self.hora_inicio_serie.insert(0, "09:00")
+        self.hora_fin_serie.delete(0, tk.END); self.hora_fin_serie.insert(0, "10:00")
+        self.combo_tipo_periodo.set("Semanas")
+        self.cantidad_periodo.delete(0, tk.END); self.cantidad_periodo.insert(0, "1")
+        self.establecer_fecha(self.fecha_inicio_serie_widget, datetime.now())
+        self.serie_indefinida.deselect()
+        self.fecha_fin_serie_widget.configure(state="normal")
+        self.establecer_fecha(self.fecha_fin_serie_widget, datetime.now())
+
+    def cargar_ocurrencias_serie(self, _=None):
+        sel = self.tree_series.selection()
+        for item in self.tree_ocurrencias.get_children():
+            self.tree_ocurrencias.delete(item)
+        if not sel:
+            return
+        id_serie = self.tree_series.item(sel[0])["values"][0]
+        try:
+            rows = self.ejecutar_consulta("""
+                SELECT id_evento, titulo, fecha_inicio, fecha_fin
+                FROM eventos WHERE id_serie_evento = %s
+                ORDER BY fecha_inicio
+            """, (id_serie,), fetch=True)
+            for row in rows:
+                self.tree_ocurrencias.insert("", "end", values=(
+                    row[0], row[1], row[2].strftime("%Y-%m-%d %H:%M"), row[3].strftime("%Y-%m-%d %H:%M")))
+        except Exception as e:
+            print(f"Error cargando ocurrencias: {e}")
+
+    def generar_serie_eventos(self):
+        try:
+            id_usuario = self.usuarios_combo.get(self.combo_serie_usuario.get())
+            id_categoria = self.categorias_combo.get(self.combo_serie_categoria.get())
+            titulo = self.titulo_serie.get().strip()
+            if id_usuario is None or id_categoria is None or not titulo:
+                raise ValueError("Selecciona usuario, categoría y escribe un título.")
+
+            try:
+                hora_inicio = datetime.strptime(self.hora_inicio_serie.get().strip(), "%H:%M").time()
+                hora_fin = datetime.strptime(self.hora_fin_serie.get().strip(), "%H:%M").time()
+            except ValueError:
+                raise ValueError("La hora debe tener formato HH:MM.")
+            if hora_fin <= hora_inicio:
+                raise ValueError("La hora de fin debe ser posterior a la de inicio.")
+
+            tipo_periodo = self.combo_tipo_periodo.get()
+            try:
+                cantidad = int(self.cantidad_periodo.get().strip())
+                if cantidad <= 0:
+                    raise ValueError
+            except ValueError:
+                raise ValueError("La cantidad debe ser un número entero positivo.")
+
+            fecha_inicio = datetime.strptime(self.obtener_fecha(self.fecha_inicio_serie_widget), "%Y-%m-%d").date()
+            if self.serie_indefinida.get():
+                fecha_fin = None
+            else:
+                fecha_fin = datetime.strptime(self.obtener_fecha(self.fecha_fin_serie_widget), "%Y-%m-%d").date()
+                if fecha_fin < fecha_inicio:
+                    raise ValueError("La fecha final no puede ser anterior a la fecha de inicio.")
+
+            fechas = generar_fechas_serie(fecha_inicio, tipo_periodo, cantidad, fecha_fin)
+
+            conn = self.obtener_conexion()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO series_eventos
+                        (tipo_periodo, cantidad_unidades_x_repeticion, fecha_inicio_serie, fecha_final_serie)
+                        VALUES (%s, %s, %s, %s) RETURNING id_serie_evento
+                    """, (tipo_periodo, cantidad, fecha_inicio, fecha_fin))
+                    id_serie = cur.fetchone()[0]
+
+                    for f in fechas:
+                        inicio_evento = datetime.combine(f, hora_inicio)
+                        fin_evento = datetime.combine(f, hora_fin)
+                        cur.execute("""
+                            INSERT INTO eventos
+                            (id_usuario_propietario, id_categoria, titulo, fecha_inicio, fecha_fin, id_serie_evento)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                        """, (id_usuario, id_categoria, titulo, inicio_evento, fin_evento, id_serie))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+            self.limpiar_form_serie()
+            self.cargar_datos_series()
+            self.cargar_datos_eventos()
+            messagebox.showinfo("Serie generada", f"Se crearon {len(fechas)} ocurrencias, del "
+                                 f"{fechas[0]} al {fechas[-1]}.")
+
+        except Exception as e:
+            messagebox.showerror("No se pudo generar la serie", str(e))
+
+    def eliminar_serie(self):
+        sel = self.tree_series.selection()
+        if not sel:
+            return messagebox.showwarning("Selección requerida", "Selecciona una serie.")
+        id_serie = self.tree_series.item(sel[0])["values"][0]
+        if not messagebox.askyesno("Confirmar", "¿Eliminar esta serie y TODAS sus ocurrencias generadas?"):
+            return
+        try:
+            self.ejecutar_consulta("DELETE FROM series_eventos WHERE id_serie_evento = %s", (id_serie,))
+            self.cargar_datos_series()
+            self.cargar_datos_eventos()
+            for item in self.tree_ocurrencias.get_children():
+                self.tree_ocurrencias.delete(item)
+            messagebox.showinfo("Eliminada", "Serie y sus ocurrencias eliminadas.")
+        except Exception as e:
+            messagebox.showerror("No se pudo eliminar", str(e))
+
+    def cargar_datos_series(self):
+        try:
+            rows = self.ejecutar_consulta("""
+                SELECT s.id_serie_evento, s.tipo_periodo, s.cantidad_unidades_x_repeticion,
+                       s.fecha_inicio_serie, s.fecha_final_serie, COUNT(e.id_evento)
+                FROM series_eventos s
+                LEFT JOIN eventos e ON e.id_serie_evento = s.id_serie_evento
+                GROUP BY s.id_serie_evento
+                ORDER BY s.id_serie_evento DESC
+            """, fetch=True)
+
+            for item in self.tree_series.get_children():
+                self.tree_series.delete(item)
+            for row in rows:
+                fin = row[4].strftime("%Y-%m-%d") if row[4] else "Indefinida"
+                self.tree_series.insert("", "end", values=(row[0], row[1], row[2], row[3], fin, row[5]))
+
+            valores_u = ["Seleccione un usuario"] + list(self.usuarios_combo.keys())
+            self.combo_serie_usuario.configure(values=valores_u)
+            valores_c = ["Seleccione una categoría"] + list(self.categorias_combo.keys())
+            self.combo_serie_categoria.configure(values=valores_c)
+        except Exception as e:
+            print(f"Error cargando series: {e}")
+
     # -------------------- REFRESCO GENERAL --------------------
 
     def actualizar_todas_las_tablas(self):
@@ -879,6 +1165,7 @@ class AppAgenda(ctk.CTk):
         self.cargar_datos_eventos()
         self.cargar_datos_tipos_disponibilidad()
         self.cargar_datos_disponibilidades()
+        self.cargar_datos_series()
 
 
 if __name__ == "__main__":

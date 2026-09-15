@@ -143,3 +143,20 @@ AND NOT EXISTS (
       AND d.fecha = :fecha_consultada
       AND d.hora_inicio < :rango_fin AND d.hora_fin > :rango_inicio
 );
+
+CREATE TABLE series_eventos(
+id_serie_evento SERIAL PRIMARY KEY NOT NULL,
+tipo_periodo VARCHAR(50) NOT NULL CHECK (tipo_periodo IN ('Dias', 'Semanas', 'Meses', 'Años')),
+cantidad_unidades_x_repeticion SMALLINT NOT NULL CHECK (cantidad_unidades_x_repeticion > 0),
+fecha_inicio_serie DATE NOT NULL,
+fecha_final_serie DATE --Esto lo dejo con la posibilidad de null porque podría ser algo sin fecha de fin, una serie de eventos que se repite indefinidamente.
+);
+
+ALTER TABLE eventos 
+ADD COLUMN id_serie_evento INT  REFERENCES series_eventos(id_serie_evento);
+
+--Esto es el limite de fecha_final_serie
+ALTER TABLE eventos DROP CONSTRAINT eventos_id_serie_evento_fkey;
+ALTER TABLE eventos ADD CONSTRAINT eventos_id_serie_evento_fkey
+    FOREIGN KEY (id_serie_evento) REFERENCES series_eventos(id_serie_evento) ON DELETE CASCADE;
+
