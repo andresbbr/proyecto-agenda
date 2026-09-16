@@ -160,3 +160,36 @@ ALTER TABLE eventos DROP CONSTRAINT eventos_id_serie_evento_fkey;
 ALTER TABLE eventos ADD CONSTRAINT eventos_id_serie_evento_fkey
     FOREIGN KEY (id_serie_evento) REFERENCES series_eventos(id_serie_evento) ON DELETE CASCADE;
 
+CREATE TABLE tareas(
+id_tarea SERIAL PRIMARY KEY NOT NULL,
+id_evento INT NOT NULL REFERENCES eventos(id_evento),
+id_usuario INT NOT NULL REFERENCES usuarios(id_usuario),
+titulo_tarea VARCHAR(50) NOT NULL,
+descripcion_tarea VARCHAR(150) NOT NULL,
+orden_prioridad_tarea VARCHAR(50) NOT NULL CHECK (orden_prioridad_tarea IN ('Alta', 'Media', 'Baja')),
+estado_tarea VARCHAR(50) NOT NULL CHECK (estado_tarea IN ('Completada', 'En progreso', 'Pendiente', 'Cancelada')),
+fecha_limite_tarea DATE NOT NULL
+);
+
+SELECT  
+u.id_usuario
+u.nombre
+u.apellido
+COUNT (t.id_tarea) AS tareas_activas
+FROM tareas t
+JOIN usuarios u
+ON t.id_usuario=u.id_usuario
+where t.estado IN ('Pendiente', 'En progreso')
+GROUP BY
+u.id_usuario
+u.nombre
+u.apellido;
+
+SELECT u.nombre, u.apellido, 
+COUNT(*) FILTER (WHERE t.estado_tarea IN ('Pendiente', 'En progreso')) AS tareas_activas, 
+COUNT(*) FILTER (WHERE t.fecha_limite_tarea < CURRENT_DATE 
+AND t.estado_tarea NOT IN ('Completada', 'Cancelada')) AS tareas_vencidas 
+FROM usuarios u 
+LEFT JOIN tareas t ON t.id_usuario = u.id_usuario 
+GROUP BY u.id_usuario, u.nombre, u.apellido 
+ORDER BY tareas_vencidas DESC, tareas_activas DESC;
